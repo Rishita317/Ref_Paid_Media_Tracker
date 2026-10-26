@@ -1,0 +1,1031 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Paid Media Anomaly Monitor · Reformation Growth</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  /* ---------------------------------------------------------------
+     Design tokens: one place for every color/role used in the UI.
+     Data colors follow a validated categorical palette; status red is
+     reserved for anomalies and always ships with an icon + label.
+     --------------------------------------------------------------- */
+  :root {
+    --sidebar-bg: #1b3139;
+    --sidebar-ink: #c4d0d3;
+    --sidebar-ink-strong: #ffffff;
+    --sidebar-active: #2a4650;
+    --brand-accent: #ff3621;
+
+    --page-bg: #f5f5f3;
+    --surface: #ffffff;
+    --surface-sunken: #fafaf8;
+    --border: #e2e1dc;
+    --border-strong: #c9c8c1;
+
+    --ink-primary: #1d1d1b;
+    --ink-secondary: #52514e;
+    --ink-muted: #898781;
+
+    --series-1: #2a78d6;      /* daily spend / daily ROAS */
+    --baseline: #52514e;      /* 7-day baseline (reference line) */
+    --critical: #d03b3b;      /* anomaly status color */
+    --critical-wash: rgba(208, 59, 59, 0.08);
+    --warning: #fab219;
+    --good-ink: #006300;
+    --bad-ink: #b42323;
+
+    --radius: 6px;
+    --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: var(--font);
+    font-size: 13px;
+    color: var(--ink-primary);
+    background: var(--page-bg);
+    display: flex;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- Sidebar ---------- */
+  .sidebar {
+    width: 220px;
+    flex-shrink: 0;
+    background: var(--sidebar-bg);
+    color: var(--sidebar-ink);
+    display: flex;
+    flex-direction: column;
+    padding: 16px 10px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+  }
+  .brand { padding: 4px 10px 18px; border-bottom: 1px solid rgba(255,255,255,0.08); margin-bottom: 12px; }
+  .brand-name { color: var(--sidebar-ink-strong); font-size: 17px; font-weight: 600; letter-spacing: 0.2px; display: flex; align-items: center; gap: 8px; }
+  .brand-mark { width: 10px; height: 10px; background: var(--brand-accent); border-radius: 2px; transform: rotate(45deg); }
+  .brand-sub { font-size: 11px; margin-top: 4px; color: var(--sidebar-ink); opacity: 0.8; }
+  .nav-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; opacity: 0.6; padding: 10px 10px 6px; }
+  .nav-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 7px 10px; border-radius: 4px; color: var(--sidebar-ink);
+    font-size: 13px; cursor: default; margin-bottom: 1px;
+  }
+  .nav-item.active { background: var(--sidebar-active); color: var(--sidebar-ink-strong); box-shadow: inset 2px 0 0 var(--brand-accent); }
+  .nav-item .soon { font-size: 10px; opacity: 0.5; }
+  .sidebar-footer { margin-top: auto; font-size: 11px; opacity: 0.7; padding: 10px; line-height: 1.5; border-top: 1px solid rgba(255,255,255,0.08); }
+
+  /* ---------- Main area ---------- */
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .topbar {
+    height: 48px; background: var(--surface); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; padding: 0 24px;
+    position: sticky; top: 0; z-index: 5;
+  }
+  .breadcrumb { color: var(--ink-muted); font-size: 12px; }
+  .breadcrumb b { color: var(--ink-primary); font-weight: 600; }
+  .topbar-meta { font-size: 12px; color: var(--ink-secondary); display: flex; gap: 16px; align-items: center; }
+  .pill { border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; background: var(--surface-sunken); }
+
+  .content { padding: 20px 24px 40px; max-width: 1360px; width: 100%; }
+  .page-title { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  .page-desc { color: var(--ink-secondary); margin: 0 0 16px; max-width: 820px; line-height: 1.5; }
+
+  /* ---------- Tabs ---------- */
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+  .tab {
+    appearance: none; background: none; border: none; font: inherit; cursor: pointer;
+    padding: 10px 14px; color: var(--ink-secondary); font-weight: 500; font-size: 13px;
+    border-bottom: 2px solid transparent; margin-bottom: -1px; display: flex; gap: 8px; align-items: center;
+    transition: color 120ms ease, border-color 120ms ease;
+  }
+  .tab:hover { color: var(--ink-primary); }
+  .tab.active { color: var(--ink-primary); border-bottom-color: var(--ink-primary); }
+  .tab-badge {
+    font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px;
+    background: var(--critical-wash); color: var(--bad-ink); border: 1px solid rgba(208,59,59,0.25);
+  }
+
+  /* Tab panel fade for smooth switching (no page reload) */
+  #panel { transition: opacity 160ms ease; }
+  #panel.fading { opacity: 0; }
+
+  /* ---------- Filter bar ---------- */
+  .filter-bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 10px 12px; margin-bottom: 16px;
+  }
+  .filter-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--ink-muted); font-weight: 600; }
+  .segmented { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 4px; overflow: hidden; }
+  .segmented button {
+    appearance: none; border: none; background: var(--surface); font: inherit; font-size: 12px;
+    padding: 5px 11px; cursor: pointer; color: var(--ink-secondary); border-right: 1px solid var(--border);
+  }
+  .segmented button:last-child { border-right: none; }
+  .segmented button:hover { background: var(--surface-sunken); color: var(--ink-primary); }
+  .segmented button.active { background: var(--ink-primary); color: #fff; }
+  .date-inputs { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-muted); }
+  .date-inputs input {
+    font: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid var(--border-strong);
+    border-radius: 4px; color: var(--ink-primary); background: var(--surface);
+  }
+  .filter-summary { margin-left: auto; color: var(--ink-secondary); font-size: 12px; }
+
+  /* ---------- KPI tiles ---------- */
+  .kpi-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+  .kpi { padding: 14px 16px; }
+  .kpi-label { font-size: 12px; color: var(--ink-secondary); margin-bottom: 6px; display: flex; justify-content: space-between; }
+  .kpi-value { font-size: 24px; font-weight: 600; letter-spacing: -0.3px; }
+  .kpi-delta { font-size: 12px; margin-top: 6px; color: var(--ink-muted); }
+  .kpi-delta .up-good, .kpi-delta .down-good { color: var(--good-ink); font-weight: 600; }
+  .kpi-delta .up-bad, .kpi-delta .down-bad { color: var(--bad-ink); font-weight: 600; }
+
+  /* ---------- Chart cards ---------- */
+  .chart-grid { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 16px; }
+  .card-header { display: flex; justify-content: space-between; align-items: baseline; padding: 12px 16px 0; }
+  .card-title { font-size: 14px; font-weight: 600; margin: 0; }
+  .card-sub { font-size: 12px; color: var(--ink-muted); }
+  .chart-wrap { position: relative; height: 230px; padding: 8px 12px 12px; }
+  .chart-wrap.tall { height: 280px; }
+  .chart-note { font-size: 12px; color: var(--ink-secondary); padding: 0 16px 12px; display: flex; gap: 16px; flex-wrap: wrap; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 5px; }
+
+  /* ---------- Tables ---------- */
+  .table-card { margin-bottom: 16px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  thead th {
+    text-align: left; font-weight: 600; color: var(--ink-secondary); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.5px; background: var(--surface-sunken);
+    border-bottom: 1px solid var(--border); padding: 8px 12px; white-space: nowrap;
+  }
+  tbody td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .anomaly-row { cursor: pointer; }
+  .anomaly-row:hover { background: var(--surface-sunken); }
+  .anomaly-row.selected { background: #fdf3f3; }
+  .sev { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; font-size: 11px; white-space: nowrap; }
+  .sev-icon { width: 14px; height: 14px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; }
+  .sev.critical .sev-icon { background: var(--critical); color: #fff; }
+  .sev.warning .sev-icon { background: var(--warning); color: #0b0b0b; }
+  .metric-moved b { font-weight: 600; }
+  .metric-moved .driver { color: var(--ink-secondary); font-size: 12px; display: block; margin-top: 2px; }
+  .explain { line-height: 1.5; max-width: 620px; }
+  .explain .action { color: var(--ink-secondary); display: block; margin-top: 4px; }
+  .empty { padding: 28px; text-align: center; color: var(--ink-secondary); }
+
+  details.card { margin-bottom: 16px; }
+  details summary { cursor: pointer; padding: 12px 16px; font-weight: 600; font-size: 14px; list-style: none; }
+  details summary::before { content: "▸"; display: inline-block; margin-right: 8px; color: var(--ink-muted); transition: transform 120ms; }
+  details[open] summary::before { transform: rotate(90deg); }
+  .daily-scroll { max-height: 360px; overflow: auto; border-top: 1px solid var(--border); }
+  .daily-scroll thead th { position: sticky; top: 0; }
+  tr.flagged td { background: #fdf3f3; }
+
+  .method { padding: 14px 16px; line-height: 1.6; color: var(--ink-secondary); }
+  .method h3 { font-size: 14px; color: var(--ink-primary); margin: 0 0 8px; }
+  .method-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .method ul { margin: 0; padding-left: 18px; }
+  .method a { color: var(--series-1); }
+  .scorecard { display: inline-block; margin-top: 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-sunken); color: var(--ink-primary); }
+
+  @media (max-width: 1100px) {
+    .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .method-grid { grid-template-columns: 1fr; }
+    .sidebar { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============================ SIDEBAR ============================ -->
+<aside class="sidebar">
+  <div class="brand">
+    <div class="brand-name"><span class="brand-mark"></span>Reformation</div>
+    <div class="brand-sub">Growth Analytics Workspace</div>
+  </div>
+  <div class="nav-label">Monitoring</div>
+  <div class="nav-item active">Paid Media Anomalies</div>
+  <div class="nav-item">Channel Mix <span class="soon">soon</span></div>
+  <div class="nav-item">Creative Fatigue <span class="soon">soon</span></div>
+  <div class="nav-label">Planning</div>
+  <div class="nav-item">Budget Pacing <span class="soon">soon</span></div>
+  <div class="nav-item">Incrementality Tests <span class="soon">soon</span></div>
+  <div class="sidebar-footer">
+    Mock data · seeded &amp; reproducible<br />
+    Built as an interview demo for<br />AI Operations Analyst, Growth
+  </div>
+</aside>
+
+<!-- ============================ MAIN ============================ -->
+<div class="main">
+  <header class="topbar">
+    <div class="breadcrumb">Workspace / Growth / Dashboards / <b>Paid Media Anomaly Monitor</b></div>
+    <div class="topbar-meta">
+      <span id="dataWindow" class="pill"></span>
+      <span>Threshold: ±30% vs. 7-day baseline</span>
+    </div>
+  </header>
+
+  <main class="content">
+    <h1 class="page-title">Paid Media Anomaly Monitor</h1>
+    <p class="page-desc">
+      Daily performance for Reformation's two largest paid channels. Each day's ROAS is compared with its
+      trailing 7-day average; moves larger than ±30% are flagged and explained automatically, so the growth
+      team sees <em>what</em> broke and <em>where to look</em> without digging through the ad platforms.
+    </p>
+
+    <nav class="tabs" role="tablist" id="tabs"></nav>
+
+    <section id="panel" role="tabpanel">
+      <!-- Date range filter (state is kept separately per tab) -->
+      <div class="filter-bar">
+        <span class="filter-label">Date range</span>
+        <div class="segmented" id="presetButtons">
+          <button data-days="7">Last 7d</button>
+          <button data-days="14">Last 14d</button>
+          <button data-days="30">Last 30d</button>
+          <button data-days="60">All 60d</button>
+        </div>
+        <div class="date-inputs">
+          <input type="date" id="startDate" aria-label="Start date" />
+          <span>to</span>
+          <input type="date" id="endDate" aria-label="End date" />
+        </div>
+        <span class="filter-summary" id="filterSummary"></span>
+      </div>
+
+      <!-- KPI tiles -->
+      <div class="kpi-grid" id="kpis"></div>
+
+      <!-- Charts: spend and ROAS share an x-axis but use separate y-axes/charts,
+           because dollars and a ratio on one dual-axis chart invite false correlations. -->
+      <div class="chart-grid">
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Daily spend</h2>
+            <span class="card-sub">USD · shaded columns = anomaly days</span>
+          </div>
+          <div class="chart-wrap"><canvas id="spendChart"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Daily ROAS vs. 7-day baseline</h2>
+            <span class="card-sub">Revenue ÷ spend · ▲▼ = flagged anomaly</span>
+          </div>
+          <div class="chart-wrap tall"><canvas id="roasChart"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Anomaly table -->
+      <div class="card table-card">
+        <div class="card-header" style="padding-bottom:12px">
+          <h2 class="card-title" id="anomalyTitle">Flagged anomalies</h2>
+          <span class="card-sub">Click a row to locate it on the chart</span>
+        </div>
+        <div id="anomalyTable"></div>
+      </div>
+
+      <!-- Raw daily data (table view for accessibility + auditability) -->
+      <details class="card">
+        <summary>Daily data for this channel</summary>
+        <div class="daily-scroll" id="dailyTable"></div>
+      </details>
+    </section>
+
+    <!-- Methodology / assumptions -->
+    <div class="card method">
+      <div class="method-grid">
+        <div>
+          <h3>How the mock data is calibrated to Reformation</h3>
+          <ul>
+            <li>FY2025 net revenue <b>$507.1M</b>; marketing held at <b>~9% of net revenue</b> for four years (≈ $45M/yr), per the 2026 S-1.</li>
+            <li>AOV <b>$315</b>; DTC ≈ 90% of revenue, e-commerce = 67% of DTC; ~75% of new DTC customers come from <em>outside</em> paid digital.</li>
+            <li>Assumption: ~57% of marketing goes to Google + Meta → ≈ <b>$72K/day</b> combined (Google ~$30K, Meta ~$42K). Older Pathmatics estimates showed Reformation's paid social skews heavily to Instagram.</li>
+            <li>Funnel ranges from apparel benchmarks: Meta CTR ~1.1%, ROAS ~2.5–3x; Google CTR ~1.9%, ROAS ~4–5x (brand search + Shopping lift Google).</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Detection logic</h3>
+          <ul>
+            <li>ROAS = revenue ÷ spend; CAC = spend ÷ conversions (cost per conversion).</li>
+            <li>Baseline = mean ROAS of the <b>7 days before</b> each day (today excluded so an outlier can't dilute its own baseline). The first 7 days have no baseline and are not scored.</li>
+            <li>Flag when |ROAS − baseline| ÷ baseline &gt; 30%. Severity is <b>Critical</b> at ≥ 50%, else <b>Warning</b>.</li>
+            <li>Explanations compare spend, CTR, CVR, conversions and AOV with their own 7-day baselines and match the pattern to a likely cause.</li>
+          </ul>
+          <div class="scorecard" id="scorecard"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+/* =====================================================================
+   SECTION 1 — CONFIGURATION
+   Everything tunable lives here, so the logic below never hard-codes
+   business assumptions.
+   ===================================================================== */
+const CONFIG = {
+  seed: 20261025,            // fixed seed => same "random" data on every load
+  days: 60,
+  endDate: '2026-10-24',     // last day of data (yesterday, relative to the demo)
+  rollingWindow: 7,          // days in the ROAS baseline
+  anomalyThreshold: 0.30,    // flag if ROAS moves > 30% vs. baseline
+  criticalThreshold: 0.50,   // >= 50% move is "Critical"
+};
+
+// Channel profiles. Daily ROAS = CTR × CVR × AOV ÷ CPM × 1000, so these four
+// levers (plus spend) fully determine each simulated day.
+const CHANNELS = {
+  google: {
+    id: 'google',
+    label: 'Google Ads',
+    baseSpend: 30000,      // $/day at the start of the window
+    spendTrend: 0.12,      // +12% budget ramp across 60 days (fall → holiday)
+    cpm: 24,               // $ per 1,000 impressions (search/Shopping are pricier per impression)
+    cpmTrend: 0.04,
+    ctr: 0.019,            // 1.9% click-through
+    cvr: 0.018,            // 1.8% click → purchase
+    aov: 318,              // $ average order value
+    // Day-of-week multipliers, Sunday = index 0
+    weekdaySpend: [0.92, 1.05, 1.04, 1.02, 1.00, 0.97, 0.90],
+    weekdayCvr:   [0.97, 1.03, 1.02, 1.01, 1.00, 0.98, 0.96],
+  },
+  meta: {
+    id: 'meta',
+    label: 'Meta Ads',
+    baseSpend: 42000,
+    spendTrend: 0.12,
+    cpm: 12.5,             // cheaper reach on Facebook/Instagram
+    cpmTrend: 0.10,        // Q4 auction pressure pushes CPMs up ~10%
+    ctr: 0.011,
+    cvr: 0.0105,
+    aov: 296,
+    weekdaySpend: [1.08, 0.96, 0.97, 0.98, 1.00, 1.02, 1.10],
+    weekdayCvr:   [1.04, 0.98, 0.98, 0.99, 1.00, 1.01, 1.04],
+  },
+};
+
+// Deliberately injected incidents ("ground truth" for the detector).
+// Multipliers act on funnel levers, so each scenario moves the metrics the
+// way the real-world incident would.
+const INJECTED_ANOMALIES = [
+  { channel: 'google', dayIndex: 17, scenario: 'Budget runaway: spend spike, conversions flat',
+    multipliers: { spend: 1.85, ctr: 0.97, cvr: 0.56 } },
+  { channel: 'meta',   dayIndex: 24, scenario: 'Pixel / CAPI outage: conversions under-reported',
+    multipliers: { cvr: 0.38 } },
+  { channel: 'meta',   dayIndex: 37, scenario: 'Viral / influencer moment: conversion spike',
+    multipliers: { spend: 1.05, ctr: 1.45, cvr: 1.30, aov: 0.97 } },
+  { channel: 'google', dayIndex: 45, scenario: 'Discount-code leak: AOV collapse',
+    multipliers: { cvr: 1.08, aov: 0.55 } },
+  { channel: 'meta',   dayIndex: 53, scenario: 'Creative fatigue + budget push: CTR collapse',
+    multipliers: { spend: 1.45, cpm: 1.05, ctr: 0.62 } },
+];
+
+
+/* =====================================================================
+   SECTION 2 — DATA GENERATION
+   Produces flat rows: { date, channel, spend, impressions, clicks,
+   conversions, revenue } — the same shape you'd get from a warehouse table.
+   ===================================================================== */
+
+// Seeded pseudo-random generator (mulberry32). Math.random() can't be seeded,
+// and reproducible data matters: the same anomalies appear on every reload.
+function createRng(seed) {
+  let s = seed >>> 0;
+  return function () {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Multiplicative noise centred on 1.0 with standard deviation `sd`.
+// Box–Muller gives a normal draw; clamping at ±2.5σ keeps ordinary days from
+// randomly crossing the 30% alert line (so every flag is a real incident).
+function createNoise(rng) {
+  return function noise(sd) {
+    let u = 0, v = 0;
+    while (u === 0) u = rng();
+    while (v === 0) v = rng();
+    let z = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+    z = Math.max(-2.5, Math.min(2.5, z));
+    return 1 + z * sd;
+  };
+}
+
+const round2 = (x) => Math.round(x * 100) / 100;
+
+function generateDataset() {
+  const noise = createNoise(createRng(CONFIG.seed));
+  const end = new Date(CONFIG.endDate + 'T00:00:00Z');   // UTC avoids timezone drift
+  const rows = [];
+
+  for (let d = 0; d < CONFIG.days; d++) {
+    const date = new Date(end.getTime() - (CONFIG.days - 1 - d) * 86400000);
+    const iso = date.toISOString().slice(0, 10);
+    const dow = date.getUTCDay();
+    const t = d / (CONFIG.days - 1);                       // 0 → 1 across the window
+
+    for (const ch of Object.values(CHANNELS)) {
+      const incident = INJECTED_ANOMALIES.find(a => a.channel === ch.id && a.dayIndex === d);
+      const m = { spend: 1, cpm: 1, ctr: 1, cvr: 1, aov: 1, ...(incident ? incident.multipliers : {}) };
+
+      // Walk the funnel: spend → impressions → clicks → conversions → revenue
+      const spend       = ch.baseSpend * (1 + ch.spendTrend * t) * ch.weekdaySpend[dow] * noise(0.04) * m.spend;
+      const cpm         = ch.cpm * (1 + ch.cpmTrend * t) * noise(0.03) * m.cpm;
+      const impressions = (spend / cpm) * 1000;
+      const clicks      = impressions * ch.ctr * noise(0.04) * m.ctr;
+      const conversions = Math.round(clicks * ch.cvr * ch.weekdayCvr[dow] * noise(0.05) * m.cvr);
+      const aov         = ch.aov * noise(0.03) * m.aov;
+
+      rows.push({
+        date: iso,
+        channel: ch.id,
+        spend: round2(spend),
+        impressions: Math.round(impressions),
+        clicks: Math.round(clicks),
+        conversions,
+        revenue: round2(conversions * aov),
+        injectedScenario: incident ? incident.scenario : null,  // kept only to score the detector
+      });
+    }
+  }
+  return rows;
+}
+
+
+/* =====================================================================
+   SECTION 3 — METRIC CALCULATION
+   Adds derived metrics per row and the trailing 7-day ROAS baseline.
+   ===================================================================== */
+
+const mean = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
+const safeDiv = (a, b) => (b === 0 ? null : a / b);
+
+function addDailyMetrics(row) {
+  return {
+    ...row,
+    roas: safeDiv(row.revenue, row.spend),          // return on ad spend
+    cac:  safeDiv(row.spend, row.conversions),      // cost per acquired conversion
+    ctr:  safeDiv(row.clicks, row.impressions),     // click-through rate
+    cvr:  safeDiv(row.conversions, row.clicks),     // conversion rate
+    aov:  safeDiv(row.revenue, row.conversions),    // average order value
+  };
+}
+
+// Trailing average of `key` over the `window` days BEFORE index i.
+// Excluding day i matters: if today were in its own baseline, a 45% drop
+// would pull the average down and read as only ~39%.
+function trailingMean(rows, i, key, window) {
+  if (i < window) return null;                      // not enough history yet
+  return mean(rows.slice(i - window, i).map(r => r[key]));
+}
+
+// Split by channel, sort by date, add daily metrics + rolling ROAS baseline.
+function buildChannelSeries(rawRows) {
+  const byChannel = {};
+  for (const id of Object.keys(CHANNELS)) {
+    const rows = rawRows
+      .filter(r => r.channel === id)
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map(addDailyMetrics);
+    rows.forEach((row, i) => {
+      row.roasBaseline = trailingMean(rows, i, 'roas', CONFIG.rollingWindow);
+    });
+    byChannel[id] = rows;
+  }
+  return byChannel;
+}
+
+// Totals for a set of rows. Blended ROAS/CAC are ratio-of-sums, not the mean
+// of daily ratios, so a $5K day doesn't count as much as a $50K day.
+function summarize(rows) {
+  const t = rows.reduce((acc, r) => {
+    acc.spend += r.spend; acc.revenue += r.revenue; acc.conversions += r.conversions;
+    return acc;
+  }, { spend: 0, revenue: 0, conversions: 0 });
+  return { ...t, roas: safeDiv(t.revenue, t.spend), cac: safeDiv(t.spend, t.conversions) };
+}
+
+
+/* =====================================================================
+   SECTION 4 — ANOMALY DETECTION + RULE-BASED EXPLANATIONS
+   ===================================================================== */
+
+const pctChange = (value, base) => (base ? (value - base) / base : 0);
+
+function detectAnomalies(rows) {
+  const W = CONFIG.rollingWindow;
+  const anomalies = [];
+
+  rows.forEach((row, i) => {
+    if (row.roasBaseline == null) return;
+    const roasChange = pctChange(row.roas, row.roasBaseline);
+    if (Math.abs(roasChange) <= CONFIG.anomalyThreshold) return;
+
+    // Compare every funnel metric with its own 7-day baseline to find the driver.
+    const metrics = ['spend', 'clicks', 'conversions', 'revenue', 'ctr', 'cvr', 'aov', 'cac'];
+    const baseline = {}, change = {};
+    for (const k of metrics) {
+      baseline[k] = trailingMean(rows, i, k, W);
+      change[k] = pctChange(row[k], baseline[k]);
+    }
+    change.roas = roasChange;
+    baseline.roas = row.roasBaseline;
+
+    anomalies.push({
+      index: i,
+      date: row.date,
+      channel: row.channel,
+      roas: row.roas,
+      roasBaseline: row.roasBaseline,
+      roasChange,
+      severity: Math.abs(roasChange) >= CONFIG.criticalThreshold ? 'critical' : 'warning',
+      ...explainAnomaly(row, baseline, change),
+      injectedScenario: row.injectedScenario,
+    });
+  });
+  return anomalies;
+}
+
+// Formatting helpers used inside explanations
+const signedPct = (p) => (p >= 0 ? '+' : '−') + Math.abs(p * 100).toFixed(0) + '%';
+const absPct = (p) => Math.abs(p * 100).toFixed(0) + '%';
+const isFlat = (p, tol = 0.15) => Math.abs(p) < tol;
+
+// Rule-based diagnosis. Rules are checked in priority order; the first match
+// names the driver metric, a plain-language summary, and a next step.
+function explainAnomaly(row, base, ch) {
+  const dir = ch.roas < 0 ? 'dropped' : 'rose';
+  const headline = `ROAS ${dir} ${absPct(ch.roas)} vs. 7-day average ` +
+                   `(${row.roas.toFixed(2)}x vs. ${base.roas.toFixed(2)}x).`;
+
+  const rules = [
+    {
+      // Clicks still arrive but stop converting → measurement or checkout problem
+      // (keyed on CVR, so normal weekday swings in spend don't hide it)
+      when: ch.conversions < -0.30 && ch.cvr < -0.30 && ch.clicks > -0.15,
+      driver: 'Conversions', driverChange: ch.conversions,
+      detail: `Conversions fell ${absPct(ch.conversions)} even though clicks held up (${signedPct(ch.clicks)}) ` +
+              `on ${signedPct(ch.spend)} spend — conversion rate down ${absPct(ch.cvr)}.`,
+      action: 'Likely a tracking or checkout break — verify the pixel / Conversions API and site checkout before cutting budget.',
+    },
+    {
+      // People stop clicking the ads → creative fatigue / audience saturation
+      when: ch.ctr < -0.25,
+      driver: 'CTR', driverChange: ch.ctr,
+      detail: `CTR fell ${absPct(ch.ctr)} while spend moved ${signedPct(ch.spend)}; ` +
+              `conversions ${signedPct(ch.conversions)}.`,
+      action: 'Pattern matches creative fatigue — check ad frequency and rotate in fresh creative.',
+    },
+    {
+      // Spend jumps but conversions don't follow → budget/bidding runaway
+      when: ch.spend > 0.25 && isFlat(ch.conversions),
+      driver: 'Spend', driverChange: ch.spend,
+      detail: `Spend up ${absPct(ch.spend)} while conversions stayed flat (${signedPct(ch.conversions)}); ` +
+              `CAC rose ${absPct(ch.cac)} to $${row.cac.toFixed(0)}.`,
+      action: 'Likely budget or bid-strategy runaway — check for uncapped budgets, broad-match expansion or a new campaign launch.',
+    },
+    {
+      // Conversions surge → demand spike (or double-counted events)
+      when: ch.conversions > 0.30,
+      driver: 'Conversions', driverChange: ch.conversions,
+      detail: `Conversions up ${absPct(ch.conversions)} on a ${signedPct(ch.spend)} change in spend; ` +
+              `CTR ${signedPct(ch.ctr)}, CVR ${signedPct(ch.cvr)}.`,
+      action: 'Demand spike — check for an influencer post, press or viral content, and rule out duplicate conversion events before scaling budget.',
+    },
+    {
+      // Same number of orders, much smaller baskets → discounting problem
+      when: ch.aov < -0.25 && isFlat(ch.conversions, 0.2),
+      driver: 'AOV', driverChange: ch.aov,
+      detail: `Conversions held (${signedPct(ch.conversions)}) but revenue per order fell ${absPct(ch.aov)} ` +
+              `($${row.aov.toFixed(0)} vs. $${base.aov.toFixed(0)}).`,
+      action: 'Suggests discount-code leakage or promo stacking — check coupon sites and promo rules.',
+    },
+  ];
+
+  const match = rules.find(r => r.when) || {
+    driver: 'Revenue', driverChange: ch.revenue,
+    detail: `Revenue ${signedPct(ch.revenue)} and spend ${signedPct(ch.spend)} vs. their 7-day averages.`,
+    action: 'No single driver stands out — review campaign-level breakdowns.',
+  };
+
+  return {
+    driver: match.driver,
+    driverChange: match.driverChange,
+    explanation: `${headline} ${match.detail}`,
+    action: match.action,
+  };
+}
+
+
+/* =====================================================================
+   SECTION 5 — PIPELINE: run once on load
+   Generate → metrics → detection. The date filter only changes what's
+   displayed; baselines are always computed on the full history, so a
+   "Last 7d" view still has real 7-day baselines behind it.
+   ===================================================================== */
+const RAW_ROWS = generateDataset();
+const SERIES = buildChannelSeries(RAW_ROWS);
+const ANOMALIES = Object.fromEntries(
+  Object.keys(SERIES).map(id => [id, detectAnomalies(SERIES[id])])
+);
+
+
+/* =====================================================================
+   SECTION 6 — RENDERING (UI state, KPIs, charts, tables)
+   ===================================================================== */
+
+const ALL_DATES = SERIES.google.map(r => r.date);
+const MIN_DATE = ALL_DATES[0];
+const MAX_DATE = ALL_DATES[ALL_DATES.length - 1];
+
+// UI state. Each tab keeps its own date range.
+const state = {
+  channel: 'google',
+  ranges: {
+    google: { start: MIN_DATE, end: MAX_DATE, preset: 60 },
+    meta:   { start: MIN_DATE, end: MAX_DATE, preset: 60 },
+  },
+  selectedAnomalyDate: null,
+};
+
+// ---------- Formatters ----------
+const fmtUSD = (v) => v >= 1e6 ? `$${(v / 1e6).toFixed(2)}M` : v >= 1e3 ? `$${(v / 1e3).toFixed(1)}K` : `$${v.toFixed(0)}`;
+const fmtUSDFull = (v) => '$' + Math.round(v).toLocaleString('en-US');
+const fmtInt = (v) => Math.round(v).toLocaleString('en-US');
+const fmtPct1 = (v) => (v * 100).toFixed(1) + '%';
+const fmtShortDate = (iso) => new Date(iso + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+const fmtLongDate = (iso) => new Date(iso + 'T00:00:00Z').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
+const shiftDate = (iso, days) => new Date(new Date(iso + 'T00:00:00Z').getTime() + days * 86400000).toISOString().slice(0, 10);
+
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const COLORS = {
+  series: css('--series-1'), baseline: css('--baseline'), critical: css('--critical'),
+  criticalWash: css('--critical-wash'), grid: '#ecebe6', axis: '#c9c8c1', muted: css('--ink-muted'),
+  band: 'rgba(137, 135, 129, 0.13)',
+};
+
+const inRange = (row, range) => row.date >= range.start && row.date <= range.end;
+
+// ---------- Tabs ----------
+function renderTabs() {
+  const tabs = document.getElementById('tabs');
+  tabs.innerHTML = Object.values(CHANNELS).map(ch => `
+    <button class="tab ${ch.id === state.channel ? 'active' : ''}" role="tab"
+            aria-selected="${ch.id === state.channel}" data-channel="${ch.id}">
+      ${ch.label}
+      <span class="tab-badge" title="Anomalies in the full 60-day window">${ANOMALIES[ch.id].length}</span>
+    </button>`).join('');
+}
+
+function switchTab(channel) {
+  if (channel === state.channel) return;
+  const panel = document.getElementById('panel');
+  panel.classList.add('fading');                   // fade out…
+  setTimeout(() => {
+    state.channel = channel;
+    state.selectedAnomalyDate = null;
+    renderTabs();
+    renderPanel();                                  // …swap content…
+    panel.classList.remove('fading');               // …fade back in
+  }, 160);
+}
+
+// ---------- Date filter ----------
+function renderFilter() {
+  const range = state.ranges[state.channel];
+  document.querySelectorAll('#presetButtons button').forEach(btn => {
+    btn.classList.toggle('active', Number(btn.dataset.days) === range.preset);
+  });
+  const s = document.getElementById('startDate'), e = document.getElementById('endDate');
+  s.min = e.min = MIN_DATE; s.max = e.max = MAX_DATE;
+  s.value = range.start; e.value = range.end;
+  const days = SERIES[state.channel].filter(r => inRange(r, range)).length;
+  document.getElementById('filterSummary').textContent =
+    `${fmtShortDate(range.start)} – ${fmtShortDate(range.end)} · ${days} days`;
+}
+
+function setPreset(days) {
+  state.ranges[state.channel] = { start: shiftDate(MAX_DATE, -(days - 1)), end: MAX_DATE, preset: days };
+  renderPanel();
+}
+
+function setCustomRange(start, end) {
+  if (!start || !end) return;
+  if (start > end) [start, end] = [end, start];   // tolerate reversed input
+  start = start < MIN_DATE ? MIN_DATE : start;
+  end = end > MAX_DATE ? MAX_DATE : end;
+  state.ranges[state.channel] = { start, end, preset: null };
+  renderPanel();
+}
+
+// ---------- KPI tiles ----------
+// Each tile also compares against the immediately preceding period of the same
+// length (when that period exists in the data).
+function renderKpis(rows, range) {
+  const cur = summarize(rows);
+  const len = rows.length;
+  const priorRange = { start: shiftDate(range.start, -len), end: shiftDate(range.start, -1) };
+  const priorRows = SERIES[state.channel].filter(r => inRange(r, priorRange));
+  const prior = priorRows.length === len ? summarize(priorRows) : null;
+  const anomalyCount = ANOMALIES[state.channel].filter(a => inRange(a, range)).length;
+
+  // higherIsGood decides whether an increase renders as good (green) or bad (red)
+  const tile = (label, value, key, higherIsGood) => {
+    let delta = `<span>No prior ${len}d period in data</span>`;
+    if (prior && prior[key]) {
+      const p = pctChange(cur[key], prior[key]);
+      const up = p >= 0;
+      const cls = (up === higherIsGood) ? (up ? 'up-good' : 'down-good') : (up ? 'up-bad' : 'down-bad');
+      delta = `<span class="${cls}">${up ? '▲' : '▼'} ${absPct(p)}</span> vs. prior ${len}d`;
+    }
+    return `<div class="card kpi"><div class="kpi-label">${label}</div>
+            <div class="kpi-value">${value}</div><div class="kpi-delta">${delta}</div></div>`;
+  };
+
+  document.getElementById('kpis').innerHTML =
+    tile('Total spend', fmtUSD(cur.spend), 'spend', true) +
+    tile('Total revenue', fmtUSD(cur.revenue), 'revenue', true) +
+    tile('Avg ROAS (blended)', cur.roas ? cur.roas.toFixed(2) + 'x' : '—', 'roas', true) +
+    tile('Avg CAC', cur.cac ? '$' + cur.cac.toFixed(2) : '—', 'cac', false) +
+    `<div class="card kpi"><div class="kpi-label">Anomalies flagged</div>
+       <div class="kpi-value">${anomalyCount}</div>
+       <div class="kpi-delta">${anomalyCount ? `<span class="up-bad">Needs review</span> in selected range` : 'All clear in selected range'}</div></div>`;
+}
+
+// ---------- Charts ----------
+// Plugin: shade the full column behind each anomaly day (used on both charts
+// so the spend chart lines up visually with the ROAS anomaly markers).
+const anomalyBandPlugin = {
+  id: 'anomalyBands',
+  beforeDatasetsDraw(chart, _args, opts) {
+    const idx = opts.indices || [];
+    if (!idx.length) return;
+    const { ctx, chartArea: { top, bottom }, scales: { x } } = chart;
+    const colWidth = x.width / Math.max(chart.data.labels.length, 1);
+    ctx.save();
+    ctx.fillStyle = COLORS.criticalWash;
+    idx.forEach(i => ctx.fillRect(x.getPixelForValue(i) - colWidth / 2, top, colWidth, bottom - top));
+    ctx.restore();
+  },
+};
+
+// Plugin: vertical crosshair at the hovered day
+const crosshairPlugin = {
+  id: 'crosshair',
+  afterDatasetsDraw(chart) {
+    const active = chart.tooltip && chart.tooltip.getActiveElements();
+    if (!active || !active.length) return;
+    const { ctx, chartArea: { top, bottom } } = chart;
+    const x = active[0].element.x;
+    ctx.save();
+    ctx.strokeStyle = COLORS.axis;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom); ctx.stroke();
+    ctx.restore();
+  },
+};
+
+Chart.defaults.font.family = css('--font');
+Chart.defaults.font.size = 11;
+Chart.defaults.color = COLORS.muted;
+
+const sharedTooltip = {
+  backgroundColor: '#1d1d1b', titleColor: '#fff', bodyColor: '#e9e8e4', footerColor: '#f3b3b3',
+  padding: 10, cornerRadius: 4, boxPadding: 4, usePointStyle: true,
+  footerFont: { weight: '600' },
+};
+
+const sharedScales = (yTickFormat) => ({
+  x: { grid: { display: false }, border: { color: COLORS.axis }, ticks: { maxRotation: 0, autoSkipPadding: 16 } },
+  y: { grid: { color: COLORS.grid }, border: { display: false }, ticks: { callback: yTickFormat, maxTicksLimit: 6 } },
+});
+
+let spendChart, roasChart, currentView = { rows: [], anomalyByDate: {} };
+
+function anomalyFooter(items) {
+  const row = currentView.rows[items[0].dataIndex];
+  const a = row && currentView.anomalyByDate[row.date];
+  return a ? `⚠ ${a.severity === 'critical' ? 'Critical' : 'Warning'}: ROAS ${signedPct(a.roasChange)} vs. baseline · driver: ${a.driver}` : '';
+}
+
+function createCharts() {
+  spendChart = new Chart(document.getElementById('spendChart'), {
+    type: 'bar',
+    data: { labels: [], datasets: [{
+      label: 'Spend', data: [], backgroundColor: COLORS.series,
+      borderRadius: { topLeft: 3, topRight: 3 }, borderSkipped: 'bottom', maxBarThickness: 18,
+    }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 350 },
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        anomalyBands: { indices: [] },
+        tooltip: { ...sharedTooltip, callbacks: {
+          label: (c) => ` Spend: ${fmtUSDFull(c.parsed.y)}`,
+          footer: anomalyFooter,
+        } },
+      },
+      scales: sharedScales(v => fmtUSD(v)),
+    },
+    plugins: [anomalyBandPlugin, crosshairPlugin],
+  });
+
+  roasChart = new Chart(document.getElementById('roasChart'), {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'Daily ROAS', data: [], borderColor: COLORS.series, backgroundColor: COLORS.series,
+        borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.25, order: 1 },
+      { label: '7-day baseline', data: [], borderColor: COLORS.baseline, borderWidth: 1.5,
+        borderDash: [5, 4], pointRadius: 0, pointHoverRadius: 0, tension: 0.25, order: 2 },
+      { label: 'Normal range (±30%)', data: [], borderWidth: 0, pointRadius: 0, pointHoverRadius: 0,
+        backgroundColor: COLORS.band, fill: '+1', tension: 0.25, order: 4 },            // upper edge, fills down to next dataset
+      { label: '_lower', data: [], borderWidth: 0, pointRadius: 0, pointHoverRadius: 0, fill: false, tension: 0.25, order: 4 },
+      { label: 'Anomaly', data: [], showLine: false, pointStyle: 'triangle', pointRadius: 8, pointHoverRadius: 10,
+        backgroundColor: COLORS.critical, borderColor: '#ffffff', borderWidth: 2, pointRotation: [], order: 0 },
+    ] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 350 },
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        anomalyBands: { indices: [] },
+        legend: {
+          position: 'top', align: 'end',
+          labels: { usePointStyle: true, boxWidth: 8, boxHeight: 8, color: css('--ink-secondary'),
+                    filter: (item) => item.text !== '_lower',
+                    sort: (a, b) => a.datasetIndex - b.datasetIndex },
+        },
+        tooltip: { ...sharedTooltip,
+          filter: (item) => [0, 1].includes(item.datasetIndex) && item.parsed.y != null,
+          callbacks: {
+            label: (c) => ` ${c.dataset.label}: ${c.parsed.y.toFixed(2)}x`,
+            footer: anomalyFooter,
+          } },
+      },
+      scales: sharedScales(v => v.toFixed(1) + 'x'),
+    },
+    plugins: [anomalyBandPlugin, crosshairPlugin],
+  });
+}
+
+function updateCharts(rows) {
+  const labels = rows.map(r => fmtShortDate(r.date));
+  const anomalyIdx = rows.map((r, i) => (currentView.anomalyByDate[r.date] ? i : -1)).filter(i => i >= 0);
+  const band = (mult) => rows.map(r => (r.roasBaseline == null ? null : r.roasBaseline * mult));
+
+  spendChart.data.labels = labels;
+  spendChart.data.datasets[0].data = rows.map(r => r.spend);
+  spendChart.options.plugins.anomalyBands.indices = anomalyIdx;
+  spendChart.update();
+
+  const ds = roasChart.data.datasets;
+  roasChart.data.labels = labels;
+  ds[0].data = rows.map(r => r.roas);
+  ds[1].data = rows.map(r => r.roasBaseline);
+  ds[2].data = band(1 + CONFIG.anomalyThreshold);
+  ds[3].data = band(1 - CONFIG.anomalyThreshold);
+  ds[4].data = rows.map(r => (currentView.anomalyByDate[r.date] ? r.roas : null));
+  ds[4].pointRotation = rows.map(r => {               // ▼ for drops, ▲ for spikes
+    const a = currentView.anomalyByDate[r.date];
+    return a && a.roasChange < 0 ? 180 : 0;
+  });
+  roasChart.options.plugins.anomalyBands.indices = anomalyIdx;
+  roasChart.update();
+}
+
+// Programmatically hover a day on both charts (used by anomaly-table clicks)
+function focusDay(index) {
+  [spendChart, roasChart].forEach(chart => {
+    const active = [{ datasetIndex: 0, index }];
+    chart.setActiveElements(active);
+    const meta = chart.getDatasetMeta(0).data[index];
+    chart.tooltip.setActiveElements(active, { x: meta.x, y: meta.y });
+    chart.update();
+  });
+  document.getElementById('roasChart').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+// ---------- Anomaly table ----------
+function renderAnomalyTable(anomalies) {
+  const el = document.getElementById('anomalyTable');
+  document.getElementById('anomalyTitle').textContent =
+    `Flagged anomalies · ${CHANNELS[state.channel].label} (${anomalies.length})`;
+
+  if (!anomalies.length) {
+    el.innerHTML = `<div class="empty">✓ No ROAS anomalies in the selected range.</div>`;
+    return;
+  }
+  const rows = [...anomalies].sort((a, b) => b.date.localeCompare(a.date)).map(a => `
+    <tr class="anomaly-row ${a.date === state.selectedAnomalyDate ? 'selected' : ''}" data-date="${a.date}">
+      <td style="white-space:nowrap">${fmtLongDate(a.date)}</td>
+      <td><span class="sev ${a.severity}"><span class="sev-icon">!</span>${a.severity === 'critical' ? 'Critical' : 'Warning'}</span></td>
+      <td class="metric-moved"><b>ROAS ${a.roasChange < 0 ? '▼' : '▲'}</b>
+        <span class="driver">Driver: ${a.driver} ${a.driverChange < 0 ? '▼' : '▲'} ${absPct(a.driverChange)}</span></td>
+      <td class="num"><b>${signedPct(a.roasChange)}</b><br><span style="color:var(--ink-muted)">${a.roas.toFixed(2)}x vs ${a.roasBaseline.toFixed(2)}x</span></td>
+      <td class="explain">${a.explanation}<span class="action">→ ${a.action}</span></td>
+    </tr>`).join('');
+
+  el.innerHTML = `<table>
+    <thead><tr><th>Date</th><th>Severity</th><th>Metric moved</th><th class="num">% change</th><th>Explanation</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+
+// ---------- Daily data table ----------
+function renderDailyTable(rows) {
+  const body = [...rows].reverse().map(r => {
+    const a = currentView.anomalyByDate[r.date];
+    return `<tr class="${a ? 'flagged' : ''}">
+      <td>${fmtLongDate(r.date)}</td>
+      <td class="num">${fmtUSDFull(r.spend)}</td>
+      <td class="num">${fmtInt(r.impressions)}</td>
+      <td class="num">${fmtInt(r.clicks)}</td>
+      <td class="num">${fmtPct1(r.ctr)}</td>
+      <td class="num">${fmtInt(r.conversions)}</td>
+      <td class="num">${fmtPct1(r.cvr)}</td>
+      <td class="num">${fmtUSDFull(r.revenue)}</td>
+      <td class="num">${r.roas.toFixed(2)}x</td>
+      <td class="num">${r.roasBaseline == null ? '—' : r.roasBaseline.toFixed(2) + 'x'}</td>
+      <td class="num">$${r.cac.toFixed(2)}</td>
+      <td>${a ? `<span class="sev ${a.severity}"><span class="sev-icon">!</span>${signedPct(a.roasChange)}</span>` : ''}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('dailyTable').innerHTML = `<table>
+    <thead><tr><th>Date</th><th class="num">Spend</th><th class="num">Impr.</th><th class="num">Clicks</th>
+      <th class="num">CTR</th><th class="num">Conv.</th><th class="num">CVR</th><th class="num">Revenue</th>
+      <th class="num">ROAS</th><th class="num">7d baseline</th><th class="num">CAC</th><th>Flag</th></tr></thead>
+    <tbody>${body}</tbody></table>`;
+}
+
+// ---------- Detector scorecard (how well did it catch the injected incidents?) ----------
+function renderScorecard() {
+  const flagged = Object.values(ANOMALIES).flat();
+  const truePos = flagged.filter(a => a.injectedScenario).length;
+  const falsePos = flagged.length - truePos;
+  document.getElementById('scorecard').innerHTML =
+    `Detector check on this dataset: <b>${truePos} of ${INJECTED_ANOMALIES.length}</b> injected incidents caught · <b>${falsePos}</b> false positives`;
+}
+
+// ---------- Panel orchestration ----------
+function renderPanel() {
+  const range = state.ranges[state.channel];
+  const rows = SERIES[state.channel].filter(r => inRange(r, range));
+  const anomalies = ANOMALIES[state.channel].filter(a => inRange(a, range));
+  currentView = { rows, anomalyByDate: Object.fromEntries(anomalies.map(a => [a.date, a])) };
+
+  renderFilter();
+  renderKpis(rows, range);
+  updateCharts(rows);
+  renderAnomalyTable(anomalies);
+  renderDailyTable(rows);
+}
+
+// ---------- Event wiring + initial render ----------
+function init() {
+  document.getElementById('dataWindow').textContent = `Data: ${fmtShortDate(MIN_DATE)} – ${fmtShortDate(MAX_DATE)}, 2026`;
+
+  document.getElementById('tabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab');
+    if (btn) switchTab(btn.dataset.channel);
+  });
+  document.getElementById('presetButtons').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (btn) setPreset(Number(btn.dataset.days));
+  });
+  const onDateChange = () => setCustomRange(
+    document.getElementById('startDate').value, document.getElementById('endDate').value);
+  document.getElementById('startDate').addEventListener('change', onDateChange);
+  document.getElementById('endDate').addEventListener('change', onDateChange);
+
+  document.getElementById('anomalyTable').addEventListener('click', (e) => {
+    const tr = e.target.closest('.anomaly-row');
+    if (!tr) return;
+    state.selectedAnomalyDate = tr.dataset.date;
+    document.querySelectorAll('.anomaly-row').forEach(r => r.classList.toggle('selected', r === tr));
+    focusDay(currentView.rows.findIndex(r => r.date === tr.dataset.date));
+  });
+
+  // Optional deep link: open the file with #meta to land on the Meta tab
+  const hashChannel = location.hash.slice(1);
+  if (CHANNELS[hashChannel]) state.channel = hashChannel;
+
+  createCharts();
+  renderTabs();
+  renderPanel();
+  renderScorecard();
+}
+
+init();
+</script>
+</body>
+</html>
